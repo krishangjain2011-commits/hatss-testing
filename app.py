@@ -135,10 +135,35 @@ if test_file:
             f"📌 Similarity Score (Lower is better): **{score:.3f}**"
         )
 
-        if matched:
-            st.success(f"✅ Person Identified: {matched_name}")
-        else:
-            st.error("🚨 Intruder Detected! Unknown Person")
+        if score <= 1.8:
+             st.success(f"✅ Person Identified: {matched_name} (High Confidence)")
+
+        elif score <= 2.5:
+             st.warning(f"⚠️ Person Likely Known: {matched_name}")
+             st.info("User confirmation required")
+
+             if st.button("Confirm as Known"):
+                 st.success("✅ Identity confirmed by user")
+
+else:
+    st.error("🚨 Intruder Detected! Unknown Person")
+
+    st.subheader("Choose Action")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("📞 Report to Emergency Services"):
+            st.warning("🚨 Emergency Alert Sent (Demo)")
+
+    with col2:
+        new_name = st.text_input("Mark as Known (Enter Name)")
+        if new_name:
+            test_img.save("temp_intruder.jpg")
+            url = upload_known_face("temp_intruder.jpg", new_name)
+            os.remove("temp_intruder.jpg")
+
+            st.success(f"✅ Person saved as Known: {new_name}")
 
             st.subheader("Choose Action")
 
