@@ -20,7 +20,7 @@ def get_embedding(image):
     arr = np.array(image).astype("float32") / 255.0
     return arr.flatten()
 
-def match_face(known_embeddings, new_embedding, threshold=0.35):
+def match_face(known_embeddings, new_embedding, threshold=0.49):
     best_match = None
     best_dist = 999
 
