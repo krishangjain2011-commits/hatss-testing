@@ -3,14 +3,16 @@ import os
 import numpy as np
 from PIL import Image
 
-st.set_page_config(page_title="HATSS", layout="centered")
-st.title("🏠 HATSS – Intruder Detection (Cloud Friendly Prototype)")
+from firebase_upload import upload_known_face
+from firebase_config import db
 
-KNOWN_FOLDER = "known_faces"
-os.makedirs(KNOWN_FOLDER, exist_ok=True)
+st.set_page_config(page_title="HATSS", layout="centered")
+
+st.title("🏠 HATSS – House and Tech Security System")
+st.write("AI-Based Intruder Detection Prototype (Firebase Connected)")
 
 # ---------------------------
-# IMAGE EMBEDDING FUNCTION
+# LIGHTWEIGHT EMBEDDING (Cloud Friendly)
 # ---------------------------
 def get_embedding(image):
     image = image.convert("L")
@@ -35,64 +37,92 @@ def match_face(known_embeddings, new_embedding, threshold=0.35):
 
 
 # ---------------------------
+# LOAD ALL KNOWN PEOPLE FROM FIRESTORE
+# ---------------------------
+def load_known_people_embeddings():
+    known_embeddings = []
+
+    people_docs = db.collection("known_people").stream()
+
+    for person in people_docs:
+        person_name = person.id
+
+        image_docs = db.collection("known_people").document(person_name).collection("images").stream()
+
+        for img_doc in image_docs:
+            data = img_doc.to_dict()
+            url = data.get("url")
+
+            if url:
+                try:
+                    # Download image temporarily
+                    import requests
+                    response = requests.get(url)
+
+                    if response.status_code == 200:
+                        temp_file = "temp_known.jpg"
+                        with open(temp_file, "wb") as f:
+                            f.write(response.content)
+
+                        img = Image.open(temp_file).convert("RGB")
+                        emb = get_embedding(img)
+
+                        known_embeddings.append((person_name, emb))
+                        os.remove(temp_file)
+
+                except:
+                    continue
+
+    return known_embeddings
+
+
+# ---------------------------
 # STEP 1: REGISTER KNOWN PERSON
 # ---------------------------
 st.header("Step 1: Register Known Family Member")
 
-name = st.text_input("Enter Name (Example: Tony)")
-uploaded = st.file_uploader("Upload Face Image", type=["jpg", "jpeg", "png"])
+name = st.text_input("Enter Family Member Name")
+uploaded = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
 
 if st.button("Save as Known"):
     if name == "" or uploaded is None:
         st.error("Please enter name and upload an image.")
     else:
         img = Image.open(uploaded).convert("RGB")
+        st.image(img, caption="Uploaded Image", use_column_width=True)
 
-        # Save multiple images per person
-        existing = [f for f in os.listdir(KNOWN_FOLDER) if f.startswith(name + "_")]
-        next_index = len(existing) + 1
+        img.save("temp.jpg")
+        url = upload_known_face("temp.jpg", name)
+        os.remove("temp.jpg")
 
-        save_path = os.path.join(KNOWN_FOLDER, f"{name}_{next_index}.png")
-        img.save(save_path)
-
-        st.success(f"✅ Saved {name} image {next_index}")
-        st.image(img, caption=f"{name}_{next_index}")
-
-
-# ---------------------------
-# LOAD KNOWN EMBEDDINGS
-# ---------------------------
-known_embeddings = []
-
-for file in os.listdir(KNOWN_FOLDER):
-    path = os.path.join(KNOWN_FOLDER, file)
-    img = Image.open(path)
-    emb = get_embedding(img)
-
-    person_name = file.split("_")[0]  # Tony_1.png -> Tony
-    known_embeddings.append((person_name, emb))
+        st.success(f"✅ Uploaded {name} image to Firebase!")
+        st.write("📌 Firebase URL:", url)
 
 st.divider()
 
 # ---------------------------
-# STEP 2: DETECT PERSON
+# STEP 2: DETECT INTRUDER
 # ---------------------------
 st.header("Step 2: Detect Intruder")
 
-test_img_file = st.file_uploader("Upload Image to Detect", type=["jpg", "jpeg", "png"], key="test")
+st.info("Loading known embeddings from Firebase...")
+known_embeddings = load_known_people_embeddings()
+st.success(f"✅ Loaded {len(known_embeddings)} known face samples")
 
-if test_img_file is not None:
-    test_img = Image.open(test_img_file).convert("RGB")
+test_file = st.file_uploader("Upload Image to Detect", type=["jpg", "jpeg", "png"], key="test")
+
+if test_file:
+    test_img = Image.open(test_file).convert("RGB")
     st.image(test_img, caption="Test Image", use_column_width=True)
 
     test_embedding = get_embedding(test_img)
 
     if len(known_embeddings) == 0:
-        st.warning("⚠️ No known family members registered yet.")
+        st.warning("⚠️ No known family members stored in Firebase yet.")
     else:
         matched, matched_name, score = match_face(known_embeddings, test_embedding)
 
-        st.write(f"📌 Similarity Score (Lower is better): **{score:.3f}**")
+        st.write(f"📌 Similarity Score: **{score:.3f}** (lower is better)")
 
         if matched:
             st.success(f"✅ Person Identified: {matched_name}")
@@ -105,17 +135,16 @@ if test_img_file is not None:
 
             with col1:
                 if st.button("📞 Report to Emergency Services"):
-                    st.warning("🚨 Emergency Report Sent (Prototype Demo)")
+                    st.warning("🚨 Emergency Alert Sent (Prototype Demo)")
 
             with col2:
                 if st.button("✅ Mark as Known Person"):
-                    new_name = st.text_input("Enter Name to Save This Person As Known")
+                    new_name = st.text_input("Enter Name to Save This Person")
 
                     if new_name:
-                        existing = [f for f in os.listdir(KNOWN_FOLDER) if f.startswith(new_name + "_")]
-                        next_index = len(existing) + 1
+                        test_img.save("temp_intruder.jpg")
+                        url = upload_known_face("temp_intruder.jpg", new_name)
+                        os.remove("temp_intruder.jpg")
 
-                        save_path = os.path.join(KNOWN_FOLDER, f"{new_name}_{next_index}.png")
-                        test_img.save(save_path)
-
-                        st.success(f"✅ Person saved as Known: {new_name}")
+                        st.success(f"✅ Intruder marked as Known: {new_name}")
+                        st.write("📌 Firebase URL:", url)
