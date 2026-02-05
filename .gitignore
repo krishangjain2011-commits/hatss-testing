@@ -1,1 +1,8 @@
-*.json
+firebase_key.json
+__pycache__/
+embeddings.pkl
+intruder_snaps/
+known_faces/
+venv/
+.env
+.DS_Store
