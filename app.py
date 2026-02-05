@@ -1,193 +1,96 @@
-import streamlit as st
+from flask import Flask, render_template, Response
+import cv2
+import face_recognition
+import time
 import os
-import numpy as np
-from PIL import Image
-import requests
 
-from firebase_upload import upload_known_face
-from firebase_config import db
+from face_model import load_embeddings
+from firebase_upload import upload_intruder_image
 
-st.set_page_config(page_title="HATSS", layout="centered")
+app = Flask(__name__)
 
-st.title("🏠 HATSS – House and Tech Security System")
-st.write("AI-Based Intruder Detection (Firebase Connected Prototype)")
+INTRUDER_FOLDER = "intruder_snaps"
+os.makedirs(INTRUDER_FOLDER, exist_ok=True)
 
-# ---------------------------
-# EMBEDDING FUNCTION (LIGHTWEIGHT, CLOUD FRIENDLY)
-# ---------------------------
-def get_embedding(image):
-    image = image.convert("L")
-    image = image.resize((64, 64))
-    arr = np.array(image).astype("float32") / 255.0
-    return arr.flatten()
+known_encodings, known_names = load_embeddings()
 
-# ---------------------------
-# MATCHING FUNCTION (UPDATED THRESHOLD)
-# ---------------------------
-def match_face(known_embeddings, new_embedding, threshold=2.5):
-    best_match = None
-    best_dist = float("inf")
+if len(known_encodings) == 0:
+    print("⚠️ No embeddings found!")
+    print("Run:")
+    print("python register_known.py")
+    print("python train_embeddings.py")
 
-    for name, emb in known_embeddings:
-        dist = np.linalg.norm(emb - new_embedding)
-        if dist < best_dist:
-            best_dist = dist
-            best_match = name
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
-    if best_dist <= threshold:
-        return True, best_match, best_dist
-    else:
-        return False, None, best_dist
+last_alert_time = 0
+alert_delay = 10
 
-# ---------------------------
-# LOAD KNOWN PEOPLE FROM FIRESTORE
-# ---------------------------
-def load_known_people_embeddings():
-    known_embeddings = []
 
-    people_docs = db.collection("known_people").stream()
+def generate_frames():
+    global last_alert_time
 
-    for person in people_docs:
-        person_name = person.id
-        image_docs = (
-            db.collection("known_people")
-            .document(person_name)
-            .collection("images")
-            .stream()
-        )
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
 
-        for img_doc in image_docs:
-            data = img_doc.to_dict()
-            url = data.get("url")
+        rgb_frame = frame[:, :, ::-1]
 
-            if url:
-                try:
-                    response = requests.get(url, timeout=5)
-                    if response.status_code == 200:
-                        with open("temp_known.jpg", "wb") as f:
-                            f.write(response.content)
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-                        img = Image.open("temp_known.jpg").convert("RGB")
-                        emb = get_embedding(img)
+        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
 
-                        known_embeddings.append((person_name, emb))
-                        os.remove("temp_known.jpg")
+            matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.5)
+            name = "Unknown"
 
-                except:
-                    continue
+            if True in matches:
+                first_match_index = matches.index(True)
+                name = known_names[first_match_index]
 
-    return known_embeddings
+            # Green for known, Red for unknown
+            color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
 
-# ---------------------------
-# STEP 1: REGISTER KNOWN PERSON
-# ---------------------------
-st.header("Step 1: Register Known Family Member")
+            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+            cv2.putText(frame, name, (left, top - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
-name = st.text_input("Enter Family Member Name")
-uploaded = st.file_uploader("Upload Face Image", type=["jpg", "jpeg", "png"])
+            # Intruder alert
+            if name == "Unknown":
+                current_time = time.time()
 
-if st.button("Save as Known"):
-    if name == "" or uploaded is None:
-        st.error("Please enter name and upload an image.")
-    else:
-        img = Image.open(uploaded).convert("RGB")
-        st.image(img, caption="Uploaded Image", use_column_width=True)
+                if current_time - last_alert_time > alert_delay:
+                    snap_path = os.path.join(INTRUDER_FOLDER, f"intruder_{int(current_time)}.jpg")
+                    cv2.imwrite(snap_path, frame)
 
-        img.save("temp.jpg")
-        url = upload_known_face("temp.jpg", name)
-        os.remove("temp.jpg")
+                    print("🚨 INTRUDER DETECTED!")
+                    print("📸 Snapshot saved:", snap_path)
 
-        st.success(f"✅ Image saved for {name}")
-        st.write("📌 Firebase URL:", url)
+                    try:
+                        url = upload_intruder_image(snap_path)
+                        print("☁ Uploaded to Firebase:", url)
+                    except Exception as e:
+                        print("❌ Firebase upload failed:", e)
 
-st.divider()
+                    last_alert_time = current_time
 
-# ---------------------------
-# STEP 2: DETECT INTRUDER
-# ---------------------------
-st.header("Step 2: Detect Intruder")
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
 
-st.info("Loading known face samples from Firebase...")
-known_embeddings = load_known_people_embeddings()
-st.success(f"✅ Loaded {len(known_embeddings)} known samples")
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-test_file = st.file_uploader(
-    "Upload Image to Detect",
-    type=["jpg", "jpeg", "png"],
-    key="test"
-)
 
-if test_file:
-    test_img = Image.open(test_file).convert("RGB")
-    st.image(test_img, caption="Test Image", use_column_width=True)
+@app.route("/")
+def index():
+    return render_template("index.html")
 
-    test_embedding = get_embedding(test_img)
 
-    if len(known_embeddings) == 0:
-        st.warning("⚠️ No known family members found.")
-    else:
-        matched, matched_name, score = match_face(
-            known_embeddings,
-            test_embedding
-        )
+@app.route("/video_feed")
+def video_feed():
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
-        st.write(
-            f"📌 Similarity Score (Lower is better): **{score:.3f}**"
-        )
 
-        if score <= 1.8:
-             st.success(f"✅ Person Identified: {matched_name} (High Confidence)")
-
-        elif score <= 2.5:
-             st.warning(f"⚠️ Person Likely Known: {matched_name}")
-             st.info("User confirmation required")
-
-             if st.button("Confirm as Known"):
-                 st.success("✅ Identity confirmed by user")
-
-else:
-    st.error("🚨 Intruder Detected! Unknown Person")
-
-    st.subheader("Choose Action")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("📞 Report to Emergency Services"):
-            st.warning("🚨 Emergency Alert Sent (Demo)")
-
-    with col2:
-        new_name = st.text_input("Mark as Known (Enter Name)")
-        if new_name:
-            test_img.save("temp_intruder.jpg")
-            url = upload_known_face("temp_intruder.jpg", new_name)
-            os.remove("temp_intruder.jpg")
-
-            st.success(f"✅ Person saved as Known: {new_name}")
-
-            st.subheader("Choose Action")
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                if st.button("📞 Report to Emergency Services"):
-                    st.warning("🚨 Emergency Alert Sent (Demo)")
-
-            with col2:
-                if st.button("✅ Mark as Known Person"):
-                    new_name = st.text_input(
-                        "Enter Name to Save This Person"
-                    )
-
-                    if new_name:
-                        test_img.save("temp_intruder.jpg")
-                        url = upload_known_face(
-                            "temp_intruder.jpg",
-                            new_name
-                        )
-                        os.remove("temp_intruder.jpg")
-
-                        st.success(
-                            f"✅ Person saved as Known: {new_name}"
-                        )
-                        st.write("📌 Firebase URL:", url)
+if __name__ == "__main__":
+    app.run(debug=True)
