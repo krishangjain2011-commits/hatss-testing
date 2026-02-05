@@ -1,5 +1,4 @@
-venv/
-__pycache__/
+serviceAccountKey.json
 known_faces/
 intruder_snaps/
-*.pkl
+__pycache__/
