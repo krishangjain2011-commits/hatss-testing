@@ -5,7 +5,7 @@ cred = credentials.Certificate("firebase_key.json")
 
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred, {
-        "storageBucket": "YOUR_PROJECT_ID.appspot.com"
+        "storageBucket": "hatss-4f530.appspot.com"
     })
 
 db = firestore.client()
